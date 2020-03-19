@@ -394,9 +394,3 @@ sim_data %>%
   expand_limits(y = c(0.10, 0.30))
 ```
 
-
-```{r, }
-### Christine & Melanie's modified diff-in-diff
-
-
-```
