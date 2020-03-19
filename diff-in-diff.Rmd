@@ -1,0 +1,402 @@
+---
+title: "Difference-in-Difference"
+author: ""
+date: "03/16/2019"
+output: 
+  html_document:
+    toc: true
+  pdf_document:
+    keep_tex: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(xaringan)
+library(tidyverse)
+library(ggdag)
+```
+
+# Introduction
+
+The difference-in-difference approach is an extension of the analysis to estimate the effect of the exposure in the exposed (the average effect of the exposure in the exposed or ATT). 
+
+Consider a cohort of exposed ($e=1$) and unexposed ($e=0$) individuals free of the outcome at baseline. Assuming conditional exchangeability, one would be able to estimate the ATT: Y^e=1^  -  Y^e=0^
+
+However, what happens if both the exposed and the unexposed have some existing outcome before the exposure takes place? We will call the period when the exposure happens ($t*$), 
+so that the time period $t < t*$ is the pre-exposure period 
+and $t >= t*$ is the post-exposure period. Now the causal effect could be conceptualized as the "gain" or $\Delta$ in the outcome due to the exposure in the exposed had they not been exposed.
+
+In the figure below, we use the sufficient component causes framework to represent the causal structure that generates our data at each time $t = 1 \ to  \ T$
+
+![causal structure using sufficient component causes](/Users/luissegura/Dropbox/Diff in Diff/figure_1.jpg)
+
+```{r, }
+theme_set(theme_dag())
+
+dagify(y ~ e + c,
+       c ~ time, 
+       e ~ time) %>% 
+  ggdag
+```
+
+For this scenario, we will also assume that the $Pr(Y)$ will increase at each time $t$ due to other causes that are not the exposure. So that we will see an increase in the $Pr(Y)$ regardless of the exposure ever happened.
+
+To generate such scenario, we need to notice Sufficient Cause 1. We will assume that only the prevalence of $C$ increases over time along the entire study period. Because SC1 is increasing over time, time $t$ (sufficient cause 6 or SC 6) is associated with an increase in the $Pr(Y)$. 
+
+In this scenario, for every time $t$ when $t < t*$, the prevalence of the outcome $Y$ is determined by SC1, SC2, and SC4 in both the exposed group and the unexposed group. However, for the unexposed group the $Pr(Y)$ is also determined by SC1 ane SC2 during the period where $t >= t*$. 
+Notice that SC3 has not yet been completed because the exposure $E$ happens at $t*$ for the exposed group. 
+
+For every time $t >= t*$ the $Pr(Y)$ is determined by SC1, SC2, SC3, and SC4 only in the exposed group. 
+
+```{r, echo = F }
+### Create functions for Risk Ratios and Odds Ratios
+
+# RR
+risk_r<-function(p1, p2){
+  (p1 + p2) / p1
+}
+
+# OR
+or_<-function(p1, p2){
+  ((p1 + p2) / (p1)) / ((1 - (p1 + p2)) / ((1 - (p1 + p2)) + p2))
+}
+
+# Exponential growth function
+exp_fun<-function(x, r, t){
+  x*((1+r)^t)
+}
+
+```
+
+
+
+# Rules for Simulation
+
+**Rule 1:** The prevalence of $C$ increases at each time $t$
+
+**Rule 2:** $H$ and $Z$ remain constant over time
+
+**Rule 3:** $Pr(Y) = 1$ if $(E \ and \ A)$ or $(H)$ or $(C \ and \ B)$ or $(Ē \ and \ Z)$
+
+**Rule 4:** $E$ is a state-level (group) exposure and the $Pr(E) = 1$ if $(U)$
+
+**Rule 5:** $U$ is a state-level (group) cause and is deterministic
+
+**Rule 6:** $C$ is a deconfounder of $E$ and $Y$
+
+**Rule 7:** $H$ causes $Y$ and is time-invariant. $H$ represents the difference in baseline risk betweeen $E$ groups
+
+**Rule 8:** $time$ confounds $E$ and $Y$
+
+**Rule 9:** $E$ happens only for the exposed group at time $t*$
+
+**Rule 10:** There are multiple times $t*$ at which the exposure happens
+
+
+We will simulate 15 states over a 20 year period. Two states will receive $E$ at t = 3, 4 states will receive $E$ at t = 5, 2 states at t = 9 and 2 states at t = 15. This is shown in the table below:
+
+```{r, }
+
+law_tab <- tibble(state = 1:15, 
+                  e_yr = ifelse(state < 3, 3, 
+                               ifelse(state > 2 & state < 7, 5, 
+                                     ifelse(state == 7 | state == 8, 9, 
+                                            ifelse(state == 9 | state == 10, 15, 100)))))
+
+
+law_tab
+
+```
+
+Note that the exposure $E$ does not happen for 5 states during the study period, $t*$ > 20 for states 11 to 15.
+
+## Prevalences of causal partners
+```{r, }
+### exponential growth function
+growth <- function(x, r, t){
+  x * ((1 + r) ^ t)
+}
+
+### create empty object to store the prevalence of C over time
+pr_c <- rep(NA, 20)
+
+### creating a vector for year
+year <- 1:20
+
+### the n of each state is going to be 10,000
+state_size <- 10000
+
+### number of observations per state during 20 years
+n_years <- state_size * 20
+
+### Estimate the prevlance of C exponentially
+for(i in 1:length(year)){
+  pr_c[i] <- growth(.14, 0.0678, i)
+}
+
+### plotting the prevalence of C over time
+plot(year, pr_c)
+
+pr_c
+
+
+### creating a table with the prevalences of each causal partneer
+rules <- tibble(year = year, 
+                pr_c = pr_c, 
+                pr_a = 0.20,
+                pr_b = 0.10,
+                pr_h = 0.10, 
+                pr_z = 0.05, 
+                pr_u = 1.00)
+
+rules
+```
+
+## Setting the true causal parameters
+With these rules we know the true causal parameters: the causal risk difference (RD = Y^e=1^  - Y^e=0^), causal risk ratio (RR = Y^e=1^ / Y^e=0^) and causal Odds Ratio (OR = odds(Y^e=1^) / odds(Y^e=1^))
+
+Where Y^e=1^ = $Pr(A)*Pr(1-B)*Pr(1-H) + Pr(B)*Pr(1-H) + Pr(H)$
+
+and Y^e=0^ = $Pr(Z)*Pr(1-B)*Pr(1-H) + Pr(B)*Pr(1-H) + Pr(H)$
+
+
+```{r, }
+rules %>% 
+  mutate(y_e = (pr_a * (1 - pr_b) * (1 - pr_h)) + (pr_b * (1 - pr_h)) + pr_h, 
+         y_ne = (pr_z * (1 - pr_b) * (1 - pr_h)) + (pr_b * (1 - pr_h)) + pr_h, 
+         RD = y_e - y_ne, 
+         RR = y_e / y_ne, 
+         OR = (y_e / (1 - y_e)) / (y_ne / (1 - y_ne)))
+
+
+```
+
+# Simulating the dataset
+
+```{r eval = F, echo = F}
+### create an empty list 
+mylist <- list()
+
+### setting the seed for reproducible results
+set.seed(1471)
+rules$pr_c[1]
+
+### loop to simulate a dataset per state (10 states) and store it in a list
+for(i in 1:10){
+    mylist[[i]] <- tibble(year = rep(year, each = state_size * 10),
+                          state = i,
+                           C = rbinom(2e5, 1, rules$pr_c),
+                           H = rbinom(2e5, 1, rules$pr_h),
+                           P = ifelse(year > 2, rbinom(2e5, 1, rules$pr_p), 0),
+                           G = ifelse(year > 2, rbinom(2e5, 1, rules$pr_g), 0),
+                           A = rbinom(2e5, 1, rules$pr_a),
+                           B = rbinom(2e5, 1, rules$pr_b))
+     ### Generating the exposure (E)
+     ### For states 1 and 2, Pr(E) = 1 if year > 2 and C & P = 1 or G = 1
+     if(i < 3){
+       mylist[[i]][["E"]] <- ifelse((mylist[[i]][["year"]] > 2 & mylist[[i]][["C"]] == 1 & mylist[[i]][["P"]] == 1) | 
+                                     (mylist[[i]][["year"]] > 2 & mylist[[i]][["G"]] == 1), 1, 0)
+     } ### For states 3, 4, 5, 6, Pr(E) = 1 if year > 4 and C & P = 1 or G = 1
+     else if(i > 2 & i < 7){
+       mylist[[i]][["E"]] <- ifelse((mylist[[i]][["year"]] > 4 & 
+                                      mylist[[i]][["C"]] == 1 & mylist[[i]][["P"]] == 1) | 
+                                      (mylist[[i]][["year"]] > 4 & mylist[[i]][["G"]] == 1), 1, 0)
+     } ### For states 7 and 8, Pr(E) = 1 if year > 8 and C & P = 1 or G = 1 
+     else if(i > 6 & i < 9){
+       mylist[[i]][["E"]] <- ifelse((mylist[[i]][["year"]] > 8 & mylist[[i]][["C"]] == 1 & mylist[[i]][["P"]] == 1) | 
+                                      (mylist[[i]][["year"]] > 8 & mylist[[i]][["G"]] == 1), 1, 0)
+     } ### For states 9 and 10, Pr(E) = 1 if year > 14 and C & P = 1 or G = 1 
+     else if(i > 8){
+       mylist[[i]][["E"]] <- ifelse((mylist[[i]][["year"]] > 14 & mylist[[i]][["C"]] == 1 & mylist[[i]][["P"]] == 1) | 
+                                      (mylist[[i]][["year"]] > 14 & mylist[[i]][["G"]] == 1), 1, 0)
+     }
+    ### Generating Pr(D) == 1 if C == 1 & B ==1 or H == 1 or E == 1 & A == 1
+     mylist[[i]][["D"]] <- ifelse((mylist[[i]][["C"]] == 1 & mylist[[i]][["B"]] == 1) |
+                                   mylist[[i]][["H"]] == 1 |
+                                   (mylist[[i]][["E"]] == 1 & mylist[[i]][["A"]] == 1), 1, 0)
+}
+
+### unlisting the dataset for each state and merging them
+sim_data <- do.call(rbind, mylist)
+
+### creating an ID variable
+sim_data$id <- 1:nrow(sim_data)
+
+### removing the list with each dataset
+rm(mylist)
+
+```
+
+
+```{r, }
+### create an empty list 
+mylist <- list()
+
+### setting the seed for reproducible results
+set.seed(1471)
+
+### loop to simulate a dataset per state (15 states) and store it in a list
+for(i in 1:15){
+    mylist[[i]] <- tibble(year = rep(year, each = state_size),
+                          state = i,
+                           H = rbinom(n_years, 1, rules$pr_h),
+                           A = rbinom(n_years, 1, rules$pr_a),
+                           B = rbinom(n_years, 1, rules$pr_b), 
+                           Z = rbinom(n_years, 1, rules$pr_z))
+    
+}
+
+
+### unlisting the dataset for each state and merging them
+sim_data <- do.call(rbind, mylist)
+
+### remove the list from the environment
+rm(mylist)
+
+### creating an ID variable
+sim_data$id <- 1:nrow(sim_data)
+
+### creating an empty variable for the confounder
+sim_data$C <- NA
+
+### sampling the confounder C with different probabilities by year
+for(i in unique(sim_data$year)){
+  sim_data$C[sim_data$year == i] <- rbinom(1.5e5, 1, rules$pr_c[i])
+  
+}
+
+
+### Creating the rest of the variables
+sim_data <- sim_data %>%
+            ### U is deterministic (0,1) it appears for specific states at specific times.
+            mutate(U = ifelse((state < 3 &  year > 2), rbinom(n_years, 1, rules$pr_u), 
+                          ifelse((state > 2 & state < 7) & year > 4, rbinom(n_years, 1, rules$pr_u), 
+                              ifelse((state == 7 & year > 8) | (state == 8 & year > 8), 
+                                     rbinom(n_years, 1, rules$pr_u),
+                                     ifelse((state == 9 & year > 14) | (state == 10 & year > 14), 
+                                            rbinom(2e4, 1, rules$pr_u), 0)))), 
+                   ### Pr(E == 1) if C and P == 1 or G == 1
+                   E = ifelse(U == 1, 1, 0),
+                   ### Pr(D == 1) if C and B == 1 or H == 1 or E and A == 1
+                   Y = ifelse((C == 1 & B == 1) | H == 1 | (E == 1 & A == 1) | (E == 0 & Z == 1), 1, 0))
+
+
+### Checking the distribution of the prevalences of each SCC element
+sim_data %>%
+  group_by(year) %>%
+  summarise(pr_c = mean(C), 
+            pr_b = mean(B), 
+            pr_h = mean(H), 
+            pr_z = mean(Z), 
+            pr_a = mean(A), 
+            pr_e = mean(E), 
+            pr_y = mean(Y), 
+            pr_u = mean(U)) %>%
+  print(n = Inf)
+
+sim_data %>%
+  group_by(state, year) %>%
+  summarise(pr_c = mean(C), 
+            pr_b = mean(B), 
+            pr_h = mean(H), 
+            pr_z = mean(Z), 
+            pr_a = mean(A), 
+            pr_e = mean(E), 
+            pr_y = mean(Y), 
+            pr_u = mean(U)) %>%
+  print(n = Inf)
+
+
+``` 
+
+## Exploring the dataset
+```{r, }
+### Prevalence of Y over time
+sim_data %>%
+  group_by(year) %>%
+  summarise(pr_y = mean(Y)) %>%
+  ggplot(aes(year, pr_y)) + 
+  geom_smooth(method = "loess") + 
+  geom_point(shape = 21, fill = "white", colour = "black", size = 3, stroke = 1) + 
+  geom_vline(xintercept = c(3, 5, 9, 15), linetype="dotted", 
+                color = "red", size=1) + 
+  scale_x_continuous(breaks = 1:20) + 
+  scale_y_continuous(breaks = seq(from = 0, to = 0.50, by = 0.05)) + 
+  expand_limits(y = c(0, 0.50)) + 
+  ggtitle("Prevalence of Y over time") + 
+  labs(caption = "\nThe dotted red lines represent the times t* when E happens")
+
+
+
+### Prevalence of C over time
+sim_data %>%
+  group_by(year) %>%
+  summarise(pr_c = mean(C)) %>%
+  ggplot(aes(year, pr_c)) + 
+  geom_smooth(method = "loess") + 
+  geom_point(shape = 21, fill = "white", colour = "black", size = 3, stroke = 1) + 
+  scale_x_continuous(breaks = 1:20) +
+  scale_y_continuous(breaks = seq(from = 0, to = 0.60, by = 0.05)) + 
+  expand_limits(y = c(0, 0.60)) + 
+  ggtitle("Prevalence of C over time")
+
+### Prevalence of E over time
+sim_data %>%
+  group_by(year) %>%
+  summarise(pr_e = mean(E)) %>%
+  ggplot(aes(year, pr_e)) + 
+  geom_smooth(method = "loess", se = F) + 
+  geom_point(shape = 21, fill = "white", colour = "black", size = 3, stroke = 1) + 
+  scale_x_continuous(breaks = 1:20) + 
+  scale_y_continuous(breaks = seq(from = 0, to = 1.0, by = 0.05)) + 
+  expand_limits(y = c(0, 1.0)) +
+  ggtitle("Prevalence of E over time")
+
+
+### Prevalence of Y by state
+sim_data %>%
+  mutate(state_fct = factor(state)) %>%
+  group_by(year, state_fct) %>%
+  summarise(pr_y = mean(Y)) %>%
+  ggplot(aes(year, pr_y, linetype = state_fct, color = state_fct)) + 
+  geom_line() + 
+  geom_point(shape = 21, fill = "white") + 
+  scale_x_continuous(breaks = 1:20) + 
+  scale_y_continuous(breaks = seq(from = 0, to = 0.30, by = 0.05)) + 
+  expand_limits(y = c(0.10, 0.30)) +
+  ggtitle("Prevalence of Y by state")
+
+### Prevalence of E by state
+sim_data %>%
+  mutate(state_fct = factor(state)) %>%
+  group_by(year, state_fct) %>%
+  summarise(pr_e = mean(E)) %>%
+  ggplot(aes(year, pr_e, linetype = state_fct, color = state_fct)) + 
+  geom_line() + 
+  geom_point(shape = 21, fill = "white") + 
+  scale_x_continuous(breaks = 1:20) 
+
+
+### Prevalence of Y by E
+sim_data %>%
+  mutate(E_fct = factor(E)) %>%
+  group_by(year, E_fct) %>%
+  summarise(pr_y = mean(Y)) %>%
+  ggplot(aes(year, pr_y, linetype = E_fct, color = E_fct)) + 
+  geom_smooth(method = "loess") + 
+  geom_point(shape = 21, fill = "white", size = 3, stroke = 1) + 
+  geom_vline(xintercept = c(3, 5, 9, 15), linetype="dotted", 
+                color = "purple", size=1) +
+  scale_x_continuous(breaks = 1:20) + 
+  scale_y_continuous(breaks = seq(0, 0.30, 0.05)) + 
+  expand_limits(y = c(0.10, 0.30))
+```
+
+
+```{r, }
+### Christine & Melanie's modified diff-in-diff
+
+
+```
